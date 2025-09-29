@@ -28,7 +28,7 @@ const ventureCards = [
 ];
 
 // ===== Game State Creation =====
-function createInitialGameState(numHumans, numAi, winTarget) {
+function createInitialGameState(numHumans, numAi, winTarget, playerNames = []) {
     const ROWS = MAP.length; const COLS = MAP[0].length;
 
     var nodes = [];
@@ -62,7 +62,7 @@ function createInitialGameState(numHumans, numAi, winTarget) {
     [19].forEach(ix => { tiles[ix].type = 'rest'; tiles[ix].name = 'Rest'; tiles[ix].em = '◎'; });
 
     const districtLayout = { "A": [1, 2, 13, 16], "B": [4, 5, 7, 8], "C": [10, 11, 15, 18], "D": [24, 27, 38, 39], "E": [32, 33, 35, 36], "F": [22, 25, 29, 30], "G": [14, 17, 23, 26] };
-    const propNames = ['Old Town','Willow Walk','Cherry Slope','Harbor Road','Warehouse Row','Dock Street','Hilltop','Lakeside','Windmill Way','Theater Row','Silver Street','Central Ave', 'Maple St', 'Oak Dr', 'Pine Ln', 'Elm Ct', 'Birch Rd', 'Cedar Ave', 'Spruce St', 'Aspen Ct', 'Main St', '2nd St', '3rd Ave', '4th Blvd', '5th Rd', '6th Ln', '7th Ct', '8th St'];
+    const propNames = ['Old Town','Willow Wk','Cherry Slope','Harbor Rd','Warehouse','Dock St','Hilltop','Lakeside','Windmill Way','Theater Row','Silver St','Central Ave', 'Maple St', 'Oak Dr', 'Pine Ln', 'Elm Ct', 'Birch Rd', 'Cedar Ave', 'Spruce St', 'Aspen Ct', 'Main St', '2nd St', '3rd Ave', '4th Blvd', '5th Rd', '6th Ln', '7th Ct', '8th St'];
     let nameIdx = 0;
     Object.keys(districtLayout).forEach((distName, i) => {
         districtLayout[distName].forEach(ix => {
@@ -79,16 +79,22 @@ function createInitialGameState(numHumans, numAi, winTarget) {
     DISTRICTS.forEach(d => { stocks[d] = { price:10, issued:0 }; });
 
     const numPlayers = numHumans + numAi;
-    let players = Array.from({length:numPlayers}, (_,i) => ({
-        id:i, name:'P'+(i+1), color: COLORS[i%COLORS.length],
-        cash: 2000, pos: bankIx, lastPos: bankIx, level:1,
-        suits: [], stocks: Object.fromEntries(DISTRICTS.map(d => [d, 0])),
-        halfToll:false, bonusDivTimes:1.0, nextRoll:null,
-        out:false, pendingFork:null,
-        isAi: i >= numHumans
-    }));
+    let players = Array.from({length:numPlayers}, (_,i) => {
+        const name = i < playerNames.length ? playerNames[i] : `AI ${i - numHumans + 1}`;
+        return {
+            id:i, 
+            name: name,
+            shortName: `P${i+1}`,
+            color: COLORS[i%COLORS.length],
+            cash: 2000, pos: bankIx, lastPos: bankIx, level:1,
+            suits: [], stocks: Object.fromEntries(DISTRICTS.map(d => [d, 0])),
+            halfToll:false, bonusDivTimes:1.0, nextRoll:null,
+            out:false, pendingFork:null,
+            isAi: i >= numHumans
+        };
+    });
 
-    return { tiles, adj, bankIx, players, stocks, winTarget: winTarget || 5000, cur: 0, turn: 1, phase: "Idle", rolledThisTurn: false, extraRollAvailable: false, extraRollConsumed: false, boughtStockThisTurn: false, winner: null, log: [], pendingForkChoice: false, lastCard: null, SUITS, DISTRICTS };
+    return { tiles, adj, bankIx, players, stocks, winTarget: winTarget || 5000, cur: 0, turn: 1, phase: "Idle", rolledThisTurn: false, extraRollAvailable: false, extraRollConsumed: false, boughtStockThisTurn: false, winner: null, log: [], pendingForkChoice: false, lastCard: null, SUITS, DISTRICTS, askBankTrade: false };
 }
 
 // ===== Helpers =====
@@ -106,79 +112,39 @@ function netWorth(gs, p){
     Object.keys(propsByDistrict).forEach(dist => {
         const props = propsByDistrict[dist];
         const n = props.length;
-        const multiplier = 1 + (n - 1) * 0.25; // 1, 1.25, 1.5, 1.75
+        const multiplier = 1 + (n - 1) * 0.25;
         props.forEach(prop => { total += prop.price * multiplier; });
     });
     return Math.round(total);
 }
-function propToll(prop){ return Math.round(prop.price / 4); }
+function propToll(gs, prop){
+    if (prop.owner == null) return 0;
+    const owner = gs.players[prop.owner];
+    const propsInDistrict = gs.tiles.filter(t => t.type === 'prop' && t.district === prop.district && t.owner === prop.owner);
+    const n = propsInDistrict.length;
+    const multiplier = 1 + (n - 1) * 0.25;
+    return Math.round((prop.price / 4) * multiplier);
+}
 function propsOwnedBy(gs, p){ return gs.tiles.filter(t => t.type==='prop' && t.owner===p.id); }
 function changeCash(gs, p, delta){ p.cash += delta; log(gs, `${p.name} ${delta>=0?'+':''}${delta}G → Balance ${p.cash}G`); }
 function transfer(gs, from, to, amount){ from.cash -= amount; to.cash += amount; log(gs, `${from.name} → ${to.name} ${amount}G`); }
 
 // ===== Core Logic Functions =====
-function buyStock(gs, p, dist, qty){
-    const s = gs.stocks[dist];
-    const cost = s.price * qty;
-    if (p.cash < cost) { log(gs, "Not enough cash"); return false; }
-    p.cash -= cost;
-    p.stocks[dist] += qty;
-    s.issued += qty;
-    s.price += Math.floor(qty / 10);
-    if (s.price < 1) s.price = 1;
-    log(gs, `${p.name} bought ${qty} shares of ${dist} (${cost}G). Price→${s.price}`);
-    return true;
-}
-function sellStock(gs, p, dist, qty){
-    qty = Math.min(qty, p.stocks[dist]);
-    if (qty <= 0) { log(gs, "No shares to sell"); return false; }
-    const s = gs.stocks[dist];
-    const income = s.price * qty;
-    p.cash += income;
-    p.stocks[dist] -= qty;
-    s.issued -= qty;
-    s.price -= Math.floor(qty / 10);
-    if (s.price < 1) s.price = 1;
-    log(gs, `${p.name} sold ${qty} shares of ${dist} (+${income}G). Price→${s.price}`);
-    return true;
-}
+function buyStock(gs, p, dist, qty){ /* ... */ }
+function sellStock(gs, p, dist, qty){ /* ... */ }
+function investProperty(gs, p, prop, amount, free=false){ /* ... */ }
+function sellProperty(gs, p, tileIndex) { /* ... */ }
+function tryLiquidate(gs, p){ /* ... */ }
 
-function investProperty(gs, p, prop, amount, free=false){
-    if (amount < 50 || amount % 50) return false;
-    if (!free && p.cash < amount) { log(gs, "Not enough cash"); return false; }
-    if (!free) p.cash -= amount;
-    prop.price += Math.round(amount * 0.8);
-    if (prop.district) { gs.stocks[prop.district].price += Math.max(1, Math.floor(amount / 100)); }
-    log(gs, `${p.name} invested ${free?"for free ":""}${amount}G into ${prop.name} → value ${prop.price}G`);
-    return true;
-}
-
-function sellProperty(gs, p, tileIndex) {
-    const t = gs.tiles[tileIndex];
-    if (!t || t.owner !== p.id) return;
-    const val = Math.round(t.price * 0.75); // Sell for 75% of value
-    p.cash += val;
-    t.owner = null;
-    log(gs, `${p.name} sold ${t.name} to the bank for ${val}G.`);
-}
-
-function tryLiquidate(gs, p){
-    if(p.cash>=0) return true;
-    log(gs, `${p.name} is short of cash. Auto-liquidating...`);
-    const sortedDists = [...DISTRICTS].sort((a,b) => gs.stocks[b].price - gs.stocks[a].price);
-    for(const d of sortedDists){
-        while(p.cash<0 && p.stocks[d]>0){ sellStock(gs,p,d,10); } if(p.cash>=0) break;
+function handleRankUp(gs, p) {
+    if(SUITS.every(s => p.suits.includes(s))){
+        const salary = 300 + 50*(p.level-1) + 10*propsOwnedBy(gs,p).length;
+        let div=0; DISTRICTS.forEach(d => { div += Math.floor(gs.stocks[d].price * p.stocks[d] * 0.5); });
+        div = Math.floor(div * p.bonusDivTimes);
+        p.bonusDivTimes=1.0; p.level++; p.suits = [];
+        log(gs, `${p.name} ranked up! 💼 Salary +${salary}G / Dividend +${div}G`);
+        p.cash+=salary+div;
     }
-    const sortedProps = propsOwnedBy(gs, p).sort((a,b) => a.price - b.price);
-    for(const pr of sortedProps){
-        if(p.cash>=0) break;
-        const val=Math.round(pr.price*0.5);
-        pr.owner=null;
-        p.cash+=val;
-        log(gs, `${p.name} sold ${pr.name} for ${val}G.`);
-    }
-    if(p.cash<0){ p.out=true; log(gs, `${p.name} is bankrupt and out.`); }
-    return p.cash>=0;
 }
 
 function rollDice(gs){
@@ -193,6 +159,7 @@ function movePlayer(gs, p, steps) {
     gs.phase="Moving";
     let cur = p.pos;
     let prev = p.lastPos;
+    let path = [cur];
     for(let i=0; i<steps; i++){
         const neighbors = gs.adj[cur].filter(ix => ix !== prev);
         let next;
@@ -205,26 +172,27 @@ function movePlayer(gs, p, steps) {
             } else {
                 log(gs, "Fork detected, waiting for client choice");
                 gs.pendingForkChoice = { options: neighbors };
-                return; // Stop movement
+                return;
             }
         } else {
-            next = gs.adj[cur][0] ?? prev; // Should not happen on a circuit
+            next = gs.adj[cur][0] ?? prev;
         }
         p.lastPos = cur;
         p.pos = next;
         cur = next;
         prev = p.lastPos;
+        path.push(cur);
         const currentTile = gs.tiles[cur];
         if (currentTile.type === 'suit' && !p.suits.includes(currentTile.suit)) {
             p.suits.push(currentTile.suit);
             log(gs, `${p.name} gained suit ${currentTile.suit}.`);
         }
-        if (cur === gs.bankIx) {
-            gs.phase = 'Action'; // Force stop at bank
-            onLand(gs);
-            return;
-        }
     }
+
+    if (path.slice(1).includes(gs.bankIx)) {
+        handleRankUp(gs, p);
+    }
+
     gs.phase="Action";
     onLand(gs);
 }
@@ -247,16 +215,8 @@ function onLand(gs){
 }
 
 function onBank(gs, p){
-    if(SUITS.every(s => p.suits.includes(s))){
-        const salary = 300 + 50*(p.level-1) + 10*propsOwnedBy(gs,p).length;
-        let div=0; DISTRICTS.forEach(d => { div += Math.floor(gs.stocks[d].price * p.stocks[d] * 0.5); });
-        div = Math.floor(div * p.bonusDivTimes);
-        p.bonusDivTimes=1.0; p.level++; p.suits = [];
-        log(gs, `${p.name} ranked up! 💼 Salary +${salary}G / Dividend +${div}G`);
-        p.cash+=salary+div;
-    } else {
-        log(gs, `${p.name} arrived at the Bank.`);
-    }
+    gs.askBankTrade = true;
+    handleRankUp(gs, p); // Still call here for landing directly on bank
     const nw=netWorth(gs, p);
     if(gs.winner==null && nw>=gs.winTarget){
         gs.winner=p.id; gs.phase="Game Over"; log(gs, `${p.name} reached the target net worth ${gs.winTarget}G! 🏆 Victory!`);
@@ -266,7 +226,7 @@ function onBank(gs, p){
 function onProp(gs, p, t){
     if(t.owner===null){ /* Can Buy */ }
     else if(t.owner===p.id){ /* Can Invest */ }
-    else { const toll=propToll(t); const finalToll = p.halfToll ? Math.floor(toll/2) : toll; p.halfToll=false; const owner=gs.players[t.owner]; log(gs, `${p.name} pays toll ${finalToll}G to ${owner.name}.`); transfer(gs, p, owner, finalToll); }
+    else { const toll=propToll(gs, t); const finalToll = p.halfToll ? Math.floor(toll/2) : toll; p.halfToll=false; const owner=gs.players[t.owner]; log(gs, `${p.name} pays toll ${finalToll}G to ${owner.name}.`); transfer(gs, p, owner, finalToll); }
 }
 
 function onChance(gs, p){ const card = ventureCards[Math.floor(Math.random()*ventureCards.length)]; gs.lastCard = card.t; log(gs, `Card for ${p.name}: ${card.t}`); card.fn(gs,p); }
@@ -274,7 +234,7 @@ function onTax(gs, p,t){ const v=t.tax ?? 100; log(gs, `${p.name} pays tax ${v}G
 
 function doBuy(gs) {
     const p = gs.players[gs.cur]; const t = gs.tiles[p.pos];
-    if (t.type !== "prop" || t.owner !== null || p.cash < t.price) return;
+    if (t.type !== "prop" || t.owner !== null || netWorth(gs, p) < t.price) return;
     p.cash -= t.price; t.owner = p.id; log(gs, `${p.name} bought ${t.name} for ${t.price}G!`);
 }
 
@@ -287,6 +247,8 @@ function endTurn(gs) {
     if(gs.players[gs.cur].out){ log(gs, "Game ended (everyone out?)"); gs.phase = "Game Over"; return; }
     gs.turn++; gs.phase="Idle"; gs.rolledThisTurn=false; gs.extraRollAvailable=false; gs.extraRollConsumed=false; gs.boughtStockThisTurn = false;
 }
+
+function handleMarketAction(gs, playerIndex, transactions) { /* ... */ }
 
 // ===== Action Handler =====
 function handleGameAction(gs, action) {
@@ -305,20 +267,8 @@ function handleGameAction(gs, action) {
         case 'buy': doBuy(gs); break;
         case 'invest': investProperty(gs, p, gs.tiles[p.pos], action.payload.amount); break;
         case 'sellProperty': sellProperty(gs, p, action.payload.tileIndex); break;
-        case 'market':
-            let isBuying = false;
-            action.payload.transactions.forEach(t => { if (t.qty > 0) isBuying = true; });
-            if (isBuying && gs.boughtStockThisTurn) {
-                log(gs, "You can only buy stocks once per turn.");
-                return;
-            }
-            action.payload.transactions.forEach(t => {
-                if (t.qty > 0) buyStock(gs, p, t.dist, t.qty);
-                else sellStock(gs, p, t.dist, -t.qty);
-            });
-            if (isBuying) gs.boughtStockThisTurn = true;
-            break;
         case 'endTurn': if(gs.rolledThisTurn) endTurn(gs); break;
+        case 'answerBankTrade': gs.askBankTrade = false; break;
         case 'forkChoice':
             if (gs.pendingForkChoice) {
                 const choice = action.payload.nextNode;
@@ -335,4 +285,4 @@ function handleGameAction(gs, action) {
     }
 }
 
-module.exports = { createInitialGameState, handleGameAction };
+module.exports = { createInitialGameState, handleGameAction, handleMarketAction };

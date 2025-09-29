@@ -2,6 +2,7 @@
     // ===== DOM Elements =====
     const lobbyContainer = document.getElementById('lobby-container');
     const gameContainer = document.getElementById('game-container');
+    const playerNameInput = document.getElementById('playerNameInput');
     const btnShowHostSetup = document.getElementById('btnShowHostSetup');
     const btnShowClientSetup = document.getElementById('btnShowClientSetup');
     const initialOptions = document.getElementById('initial-options');
@@ -31,6 +32,7 @@
     const btnEnd = document.getElementById('btnEnd');
     const btnReset = document.getElementById('btnReset');
     const btnTests = document.getElementById('btnTests');
+    const btnLogScroll = document.getElementById('btnLogScroll');
     const playerIdEl = document.getElementById('playerId');
     const stockTable = document.getElementById('stockTable');
     const dlgAskTrade = document.getElementById('dlgAskTrade');
@@ -54,22 +56,28 @@
 
     // ===== Game State =====
     let game = {};
-    let clientState = { playerId: null, roomId: null };
+    let clientState = { playerId: null, roomId: null, logAutoScroll: true };
 
     // ===== Network Handlers =====
     network.on('message', (data) => {
         const { type, payload } = data;
         switch (type) {
+
             case 'roomCreated':
                 clientState.roomId = payload.roomId;
                 roomIdDisplay.textContent = payload.roomId;
                 hostInfo.style.display = 'block';
-                playerList.innerHTML = '<li>Player 1 (Host)</li>';
-                btnStartGame.disabled = false;
                 break;
-            case 'assignPlayerId': clientState.playerId = payload.playerId; break;
+            case 'canStartGame': 
+                btnStartGame.disabled = !payload.canStart;
+                break;
+            case 'assignPlayerId': 
+                clientState.playerId = payload.playerId;
+                showLobbySettings(payload.settings, false);
+                break;
             case 'playerJoined': updatePlayerList(payload.players); break;
             case 'playerLeft': updatePlayerList(payload.players); break;
+            case 'roomSettingsUpdate': updateLobbySettings(payload.settings); break;
             case 'gameStarted':
                 game = payload.gameState;
                 clientState.playerId = payload.playerId;
@@ -95,13 +103,11 @@
             const newMessages = newState.log.slice(oldState.log?.length ?? 0);
             newMessages.forEach(msg => log(msg));
         }
-        if (newState.lastCard && newState.lastCard !== oldState.lastCard) {
+        if (newState.lastCard && newState.lastCard !== oldState.lastCard && newState.cur === clientState.playerId) {
             cardText.textContent = newState.lastCard;
             dlgCard.showModal();
         }
-        const me = newState.players[clientState.playerId];
-        const oldMe = oldState.players?.[clientState.playerId];
-        if (me.pos === newState.bankIx && oldMe?.pos !== newState.bankIx && newState.phase === 'Action') {
+        if (newState.askBankTrade && !oldState.askBankTrade && newState.cur === clientState.playerId) {
             askTrade();
         }
         checkFork();
@@ -116,18 +122,42 @@
     }
 
     function updatePlayerList(players) {
-        playerList.innerHTML = players.map((name, i) => `<li>${name} ${i === 0 ? '(Host)' : ''}</li>`).join('');
+        playerList.innerHTML = players.map(p => `<li>${p.shortName}: ${p.name} ${p.id === 0 ? '(Host)' : ''}</li>`).join('');
+    }
+
+    function showLobbySettings(settings, isHost) {
+        updateLobbySettings(settings);
+        clientSetup.style.display = 'none';
+        hostSetup.style.display = 'block';
+        hostInfo.style.display = 'block';
+        
+        numPlayersEl.disabled = !isHost;
+        numAiEl.disabled = !isHost;
+        winTargetInputEl.disabled = !isHost;
+        btnStartGame.disabled = true; // Always disable initially, server will enable it.
+    }
+
+    function updateLobbySettings(settings) {
+        numPlayersEl.value = settings.numPlayers;
+        numAiEl.value = settings.numAi;
+        winTargetInputEl.value = settings.winTarget;
     }
 
     // ===== Lobby UI Logic =====
     btnShowHostSetup.onclick = () => {
+        const name = playerNameInput.value || 'Player';
         initialOptions.style.display = 'none';
-        hostSetup.style.display = 'block';
         network.connect();
         network.on('open', () => {
             clientState.playerId = 0;
-            const settings = { numPlayers: +numPlayersEl.value, numAi: +numAiEl.value, winTarget: +winTargetInputEl.value };
+            const settings = { 
+                numPlayers: +numPlayersEl.value, 
+                numAi: +numAiEl.value, 
+                winTarget: +winTargetInputEl.value,
+                hostName: name
+            };
             network.send('createRoom', settings);
+            showLobbySettings(settings, true);
         });
     };
     btnShowClientSetup.onclick = () => {
@@ -135,11 +165,24 @@
         clientSetup.style.display = 'block';
         network.connect();
     };
-    function resetLobby() { /* ... */ }
-    btnCancelHost.onclick = resetLobby;
-    btnCancelJoin.onclick = resetLobby;
-    btnStartGame.onclick = () => network.send('startGame');
-    btnJoinGame.onclick = () => { const id = roomIdInput.value.toUpperCase(); if (id) network.send('joinRoom', { roomId: id }); };
+    
+    [numPlayersEl, numAiEl, winTargetInputEl].forEach(el => {
+        el.onchange = () => {
+            if (clientState.playerId === 0) { // Only host can change settings
+                network.send('changeSetting', { key: el.id, value: +el.value });
+            }
+        };
+    });
+
+    btnStartGame.onclick = () => {
+        network.send('startGame');
+    };
+
+    btnJoinGame.onclick = () => { 
+        const id = roomIdInput.value.toUpperCase(); 
+        const name = playerNameInput.value || 'Player';
+        if (id) network.send('joinRoom', { roomId: id, name: name }); 
+    };
 
     // ===== Game Action Emitters =====
     btnRoll.onclick = () => network.send('gameAction', { type: 'roll' });
@@ -147,7 +190,7 @@
     btnBuy.onclick = () => {
         const p = game.players[clientState.playerId];
         const t = game.tiles[p.pos];
-        buyInfo.innerHTML = `<div>Buy <strong>${t.name}</strong> for <strong>${t.price}G</strong>?<br>Balance: ${p.cash}G → ${p.cash - t.price}G</div>`;
+        buyInfo.innerHTML = `<div>Buy <strong>${t.name}</strong> for <strong>${t.price}G</strong>?<br>Net Worth: ${netWorth(p)}G → ${netWorth(p) - t.price}G</div>`;
         dlgBuy.showModal();
     };
     btnDoBuy.onclick = () => { network.send('gameAction', { type: 'buy' }); dlgBuy.close(); };
@@ -187,13 +230,23 @@
             network.send('gameAction', { type: 'sellProperty', payload: { tileIndex } });
         }
     });
+    btnLogScroll.onclick = () => {
+        clientState.logAutoScroll = !clientState.logAutoScroll;
+        btnLogScroll.textContent = `Auto-Scroll: ${clientState.logAutoScroll ? 'On' : 'Off'}`;
+    };
 
     // ===== Dialogs =====
     function askTrade() {
-        if (game.cur !== clientState.playerId) return;
         dlgAskTrade.showModal();
-        btnTradeYes.onclick = () => { dlgAskTrade.close(); btnMarket.click(); };
-        btnTradeNo.onclick = () => dlgAskTrade.close();
+        btnTradeYes.onclick = () => {
+            dlgAskTrade.close();
+            network.send('gameAction', { type: 'answerBankTrade', payload: { trade: true } });
+            btnMarket.click();
+        };
+        btnTradeNo.onclick = () => {
+            dlgAskTrade.close();
+            network.send('gameAction', { type: 'answerBankTrade', payload: { trade: false } });
+        };
     }
 
     async function askFork(curIx, options) {
@@ -212,23 +265,27 @@
     }
 
     // ===== Renderers =====
-    function log(msg){ logEl.innerHTML += `<p>${msg}</p>`; logEl.scrollTop = logEl.scrollHeight; }
+    function log(msg){ 
+        logEl.innerHTML += `<p>${msg}</p>`; 
+        if (clientState.logAutoScroll) {
+            logEl.scrollTop = logEl.scrollHeight; 
+        }
+    }
 
     function renderBoard() {
         const COLS = 13, ROWS = 7;
         boardEl.style.gridTemplateColumns = `repeat(${COLS}, 1fr)`;
         boardEl.style.gridTemplateRows = `repeat(${ROWS}, 1fr)`;
         boardEl.innerHTML = "";
-        for (let i = 0; i < 42; i++) { // Assuming 42 tiles
-            const t = game.tiles.find(tile => tile.ix === i);
-            if (!t) continue;
+        if (!game.tiles) return;
+        game.tiles.forEach(t => {
             const el = document.createElement('div');
             el.className = 'tile ' + t.type + (t.fork ? ' fork' : '');
             el.dataset.ix = t.ix;
             el.style.gridRow = (t.r + 1);
             el.style.gridColumn = (t.c + 1);
             boardEl.appendChild(el);
-        }
+        });
         const pawnsEl = document.createElement('div');
         pawnsEl.className = 'pawns';
         boardEl.appendChild(pawnsEl);
@@ -241,11 +298,22 @@
         return {left: tr.left - br.left + tr.width/2, top: tr.top - br.top + tr.height/2};
     }
 
+    function clientPropToll(game, prop){
+        if (prop.owner == null) return 0;
+        const owner = game.players[prop.owner];
+        if (!owner) return 0;
+        const propsInDistrict = game.tiles.filter(t => t.type === 'prop' && t.district === prop.district && t.owner === prop.owner);
+        const n = propsInDistrict.length;
+        const multiplier = 1 + (n - 1) * 0.25;
+        return Math.round((prop.price / 4) * multiplier);
+    }
+
     function netWorth(p) {
         if (!p || !game.stocks) return 0;
         let total = p.cash;
         Object.keys(p.stocks).forEach(d => { total += p.stocks[d] * (game.stocks[d]?.price || 0); });
         const propsByDistrict = {};
+        if (!game.tiles) return Math.round(total);
         game.tiles.forEach(t => {
             if (t.type === 'prop' && t.owner === p.id) {
                 if (!propsByDistrict[t.district]) propsByDistrict[t.district] = [];
@@ -263,6 +331,7 @@
 
     function refresh() {
         if (!game.players) return;
+
         const { players, cur, phase, turn, tiles, stocks, winner, SUITS, DISTRICTS } = game;
         const me = players[clientState.playerId];
         const currentPlayer = players[cur];
@@ -272,17 +341,25 @@
             const el = boardEl.querySelector(`.tile[data-ix="${t.ix}"]`);
             if (!el) return;
 
+            let multiplier = 1;
+            if (t.type === 'prop' && t.owner != null) {
+                const n = game.tiles.filter(tile => tile.type === 'prop' && tile.district === t.district && tile.owner === t.owner).length;
+                multiplier = 1 + (n - 1) * 0.25;
+            }
+
             const em = t.em ? `<span class="em">${t.em}</span>` : (t.fork ? '<span class="em">✳</span>' : '');
             let inner = `<span class="ix">#${t.ix}</span>`;
             if (t.type === 'prop') {
                 const ownerName = t.owner == null ? '‐' : (players[t.owner] ? players[t.owner].name : '‐');
                 inner += `<span class="owner">${ownerName}</span>`;
-                inner += `<div class="toll">${Math.round(t.price / 4)}G</div>`;
+                const tollText = multiplier > 1 ? `${clientPropToll(game, t)}G <small>(x${multiplier})</small>` : `${clientPropToll(game, t)}G`;
+                inner += `<div class="toll">${tollText}</div>`;
             }
             const titleText = t.name || (t.type === 'free' ? (t.fork ? 'Fork' : '') : '');
             inner += `<div>${em}${titleText}</div>`;
             if (t.type === 'prop') {
-                inner += `<span class="price">${t.price}G</span><span class="dmark">${t.district}</span>`;
+                const priceText = multiplier > 1 ? `${Math.round(t.price * multiplier)}G` : `${t.price}G`;
+                inner += `<span class="price">${priceText}</span><span class="dmark">${t.district}</span>`;
             } else if (t.type === 'suit') {
                 inner += `<span class="dmark">${t.suit}</span>`;
             }
@@ -326,7 +403,13 @@
             html += `<div class="suit-badges">${(SUITS || []).map(s => `<span style="opacity:${p.suits.includes(s)?1:.35}">${s}</span>`).join('')}</div>`;
             html += `<div class="small stocks-row">${(DISTRICTS || []).map(d => `${d}:${p.stocks[d]}`).join(' ')}</div>`;
             const props = game.tiles.filter(t => t.type === 'prop' && t.owner === p.id);
-            html += `<details class="prop-details"><summary>Properties (${props.length})</summary>${props.map(t => `<div class="pill">${t.name} (${t.district}/${t.price}G)<button class="btn-sell-prop" data-ix="${t.ix}">Sell</button></div>`).join('') || '<div class="small">None</div>'}</details>`;
+            const propHtml = props.map(t => {
+                const n = game.tiles.filter(tile => tile.type === 'prop' && tile.district === t.district && tile.owner === p.id).length;
+                const multiplier = 1 + (n - 1) * 0.25;
+                const priceText = multiplier > 1 ? `${Math.round(t.price * multiplier)}G` : `${t.price}G`;
+                return `<div class="pill">${t.name} (${t.district}/${priceText})<button class="btn-sell-prop" data-ix="${t.ix}">Sell</button></div>`;
+            }).join('');
+            html += `<details class="prop-details"><summary>Properties (${props.length})</summary>${propHtml || '<div class="small">None</div>'}</details>`;
             pc.innerHTML = html;
             playersEl.appendChild(pc);
         });
@@ -348,9 +431,9 @@
         const isGameOver = winner != null;
         const currentTile = tiles[currentPlayer.pos];
         btnRoll.disabled = isGameOver || !isMyTurn || phase !== 'Idle' || (game.rolledThisTurn && !(game.extraRollAvailable && !game.extraRollConsumed));
-        btnBuy.disabled = isGameOver || !isMyTurn || !(currentTile.type==='prop' && currentTile.owner===null && me.cash>=currentTile.price);
+        btnBuy.disabled = isGameOver || !isMyTurn || !(currentTile.type==='prop' && currentTile.owner===null && netWorth(me)>=currentTile.price);
         btnInvest.disabled = isGameOver || !isMyTurn || !(currentTile.type==='prop' && currentTile.owner===me.id);
-        btnMarket.disabled = isGameOver || !isMyTurn;
+        btnMarket.disabled = isGameOver;
         btnEnd.disabled = isGameOver || !isMyTurn || !game.rolledThisTurn;
         btnReset.disabled = clientState.playerId !== 0; // Host only
         

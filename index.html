@@ -11,6 +11,10 @@
 <div id="lobby-container">
     <h1>Board Tycoon</h1>
     <div class="panel">
+        <div class="kvs" style="margin-bottom: 20px;">
+            <label for="playerNameInput">Your Name:</label>
+            <input type="text" id="playerNameInput" placeholder="Enter your name">
+        </div>
         <div id="initial-options">
             <button class="btn primary" id="btnShowHostSetup">🏠 Host Game</button>
             <button class="btn" id="btnShowClientSetup">🔗 Join Game</button>
@@ -103,6 +107,7 @@
             <div class="panel props">
                 <div class="row" style="justify-content:space-between; align-items:center;">
                     <strong>Recent Log</strong>
+                <button id="btnLogScroll" class="btn ghost" style="padding: 4px 8px; font-size: 12px;">Auto-Scroll: On</button>
                     <button id="btnLogScroll" class="btn ghost" style="padding: 4px 8px; font-size: 12px;">Auto-Scroll: On</button>
                 </div>
                 <div class="log" id="log"></div>

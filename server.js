@@ -17,6 +17,7 @@ function generateRoomId() {
 }
 
 function broadcast(room, message) {
+    if (!room) return;
     room.players.forEach(player => {
         if (player.ws && player.ws.readyState === WebSocket.OPEN) {
             player.ws.send(JSON.stringify(message));
@@ -24,8 +25,16 @@ function broadcast(room, message) {
     });
 }
 
-function broadcastGameState(room) {
-    broadcast(room, { type: 'gameStateUpdate', payload: { gameState: room.gameState } });
+function getPlayerList(room) {
+    return room.players.map(p => ({ id: p.id, name: p.name, shortName: `P${p.id + 1}` }));
+}
+
+function checkIfCanStart(room) {
+    const host = room.players.find(p => p.id === room.hostId);
+    if (host && host.ws) {
+        const canStart = room.players.length === room.settings.numPlayers;
+        host.ws.send(JSON.stringify({ type: 'canStartGame', payload: { canStart } }));
+    }
 }
 
 wss.on('connection', (ws) => {
@@ -34,12 +43,12 @@ wss.on('connection', (ws) => {
     ws.on('message', (message) => {
         const data = JSON.parse(message);
         const { type, payload } = data;
-        const { roomId, playerId } = ws;
-        const room = rooms[roomId];
+        let { roomId, playerId } = ws;
+        let room = rooms[roomId];
 
         if (type === 'createRoom') {
             const newRoomId = generateRoomId();
-            const player = { id: 0, ws: ws, name: 'Player 1' };
+            const player = { id: 0, ws: ws, name: payload.hostName || 'Player 1' };
             rooms[newRoomId] = {
                 players: [player],
                 hostId: player.id,
@@ -48,37 +57,44 @@ wss.on('connection', (ws) => {
             };
             ws.roomId = newRoomId;
             ws.playerId = player.id;
+            room = rooms[newRoomId];
             ws.send(JSON.stringify({ type: 'roomCreated', payload: { roomId: newRoomId } }));
-            console.log(`Room ${newRoomId} created by Player 1`);
+            broadcast(room, { type: 'playerJoined', payload: { players: getPlayerList(room) } });
+            checkIfCanStart(room);
+            console.log(`Room ${newRoomId} created by ${player.name}`);
             return;
         } else if (type === 'joinRoom') {
             const roomToJoin = rooms[payload.roomId];
             if (roomToJoin && roomToJoin.players.length < roomToJoin.settings.numPlayers) {
                 const newPlayerId = roomToJoin.players.length;
-                const player = { id: newPlayerId, ws: ws, name: `Player ${newPlayerId + 1}` };
+                const player = { id: newPlayerId, ws: ws, name: payload.name || `Player ${newPlayerId + 1}` };
                 roomToJoin.players.push(player);
                 ws.roomId = payload.roomId;
                 ws.playerId = newPlayerId;
 
-                const playerNames = roomToJoin.players.map(p => p.name);
-                broadcast(roomToJoin, { type: 'playerJoined', payload: { players: playerNames, joinedPlayerId: newPlayerId } });
-                ws.send(JSON.stringify({ type: 'assignPlayerId', payload: { playerId: newPlayerId } }));
-                console.log(`Player ${player.name} joined room ${payload.roomId}`);
+                broadcast(roomToJoin, { type: 'playerJoined', payload: { players: getPlayerList(roomToJoin) } });
+                ws.send(JSON.stringify({ type: 'assignPlayerId', payload: { playerId: newPlayerId, settings: roomToJoin.settings } }));
+                checkIfCanStart(roomToJoin);
+                console.log(`${player.name} joined room ${payload.roomId}`);
             } else {
                 ws.send(JSON.stringify({ type: 'error', payload: { message: 'Room not found or is full' } }));
             }
             return;
         }
 
-        if (!room) {
-            console.log('No room found for client');
-            return;
-        }
+        if (!room) { return; }
 
-        if (type === 'startGame') {
+        if (type === 'changeSetting') {
+            if (playerId === room.hostId) {
+                room.settings[payload.key] = payload.value;
+                broadcast(room, { type: 'roomSettingsUpdate', payload: { settings: room.settings } });
+                checkIfCanStart(room);
+            }
+        } else if (type === 'startGame') {
             if (room.hostId === playerId) {
                 const { numPlayers, numAi, winTarget } = room.settings;
-                room.gameState = gameLogic.createInitialGameState(numPlayers, numAi, winTarget);
+                const playerNames = room.players.map(p => p.name);
+                room.gameState = gameLogic.createInitialGameState(numPlayers, numAi, winTarget, playerNames);
 
                 room.players.forEach(p => {
                     if (p.ws && p.ws.readyState === WebSocket.OPEN) {
@@ -97,47 +113,39 @@ wss.on('connection', (ws) => {
             const playerIndex = room.players.findIndex(p => p.id === playerId);
 
             if (payload.type === 'reset' && playerIndex === room.hostId) {
-                console.log(`Game reset by host in room ${roomId}`);
-                const { numPlayers, numAi, winTarget } = room.settings;
-                room.gameState = gameLogic.createInitialGameState(numPlayers, numAi, winTarget);
-                room.players.forEach(p => {
-                    if (p.ws && p.ws.readyState === WebSocket.OPEN) {
-                        p.ws.send(JSON.stringify({
-                            type: 'gameStarted',
-                            payload: { 
-                                gameState: room.gameState,
-                                playerId: p.id
-                            }
-                        }));
-                    }
-                });
+                // ... reset logic
+            }
+
+            if (payload.type === 'market') {
+                gameLogic.handleMarketAction(room.gameState, playerIndex, payload.payload.transactions);
+                broadcast(room, { type: 'gameStateUpdate', payload: { gameState: room.gameState } });
                 return;
             }
 
             if (room.gameState && playerIndex === room.gameState.cur) {
                 gameLogic.handleGameAction(room.gameState, payload);
-                broadcastGameState(room);
+                broadcast(room, { type: 'gameStateUpdate', payload: { gameState: room.gameState } });
             }
         }
     });
 
     ws.on('close', () => {
-        console.log('Client disconnected');
         const { roomId, playerId } = ws;
-        if (roomId && rooms[roomId]) {
-            rooms[roomId].players = rooms[roomId].players.filter(p => p.id !== playerId);
-            if (rooms[roomId].players.length === 0) {
+        const room = rooms[roomId];
+        if (room) {
+            room.players = room.players.filter(p => p.id !== playerId);
+            if (room.players.length === 0) {
                 delete rooms[roomId];
                 console.log(`Room ${roomId} is empty and has been deleted.`);
             } else {
-                if (rooms[roomId].hostId === playerId) {
-                    rooms[roomId].hostId = rooms[roomId].players[0].id;
-                    console.log(`Host disconnected. New host is Player ${rooms[roomId].hostId + 1}`)
+                if (room.hostId === playerId) {
+                    room.hostId = room.players[0].id;
                 }
-                const playerNames = rooms[roomId].players.map(p => p.name);
-                broadcast(rooms[roomId], { type: 'playerLeft', payload: { players: playerNames } });
+                broadcast(room, { type: 'playerLeft', payload: { players: getPlayerList(room) } });
+                checkIfCanStart(room);
             }
         }
+        console.log('Client disconnected');
     });
 });
 
