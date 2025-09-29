@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Board Tycoon – Fortune‑like</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+    <div class="sidebar">
+        <h1>Board Tycoon</h1>
+        <div class="row legend">
+            <span class="chip"><span class="dot" style="background:var(--tile-bank)"></span>Bank</span>
+            <span class="chip"><span class="dot" style="background:var(--tile)"></span>Property</span>
+            <span class="chip"><span class="dot" style="background:var(--tile-suit)"></span>Suit</span>
+            <span class="chip"><span class="dot" style="background:var(--tile-chance)"></span>Card</span>
+            <span class="chip"><span class="dot" style="background:var(--tile-tax)"></span>Tax</span>
+            <span class="chip"><span class="dot" style="background:var(--tile-rest)"></span>Rest</span>
+            <span class="chip"><span class="dot" style="background:var(--tile-fork)"></span>Fork (*)</span>
+        </div>
+
+        <div class="panel">
+            <div class="kvs">
+                <div>Current Player</div><div id="curP"></div>
+                <div>Turn</div><div id="turn"></div>
+                <div>Phase</div><div id="phase"></div>
+            </div>
+            <div class="row" style="margin-top:10px; gap:8px">
+                <button class="btn primary" id="btnRoll">🎲 Roll</button>
+                <button class="btn good" id="btnBuy" disabled>🏬 Buy</button>
+                <button class="btn good" id="btnInvest" disabled>📈 Invest</button>
+                <button class="btn" id="btnMarket" disabled>🏦 Stocks</button>
+                <button class="btn ghost" id="btnEnd" disabled>⏭️ End Turn</button>
+            </div>
+            <div class="row" style="gap:8px; margin-top:6px">
+                <button class="btn ghost" id="btnSave">💾 Save</button>
+                <button class="btn ghost" id="btnLoad">📂 Load</button>
+                <button class="btn bad" id="btnReset">🗑️ Reset</button>
+                <button class="btn ghost" id="btnTests">🧪 Tests</button>
+            </div>
+
+        </div>
+
+        <div class="players" id="players"></div>
+
+    </div>
+
+    <div class="board-wrap">
+        <div class="board" id="board"></div>
+        <div class="panel stocks">
+            <div class="row" style="justify-content:space-between; align-items:center">
+                <strong>District Stocks</strong>
+                <span class="small">Price moves with buy/sell</span>
+            </div>
+            <table id="stockTable"></table>
+        </div>
+
+        <div class="panel props">
+            <div class="row" style="justify-content:space-between; align-items:center;">
+                <strong>Recent Log</strong>
+                <button id="btnLogScroll" class="btn ghost" style="padding: 4px 8px; font-size: 12px;">Auto-Scroll: On</button>
+            </div>
+            <div class="log" id="log"></div>
+        </div>
+    </div>
+</div>
+
+<dialog id="dlgSettings">
+    <div class="dlg-hd"><strong>Game Settings</strong></div>
+    <div class="dlg-bd">
+        <div class="kvs">
+            <label for="numPlayers">Number of Players (2-4):</label>
+            <input type="number" id="numPlayers" min="2" max="4" value="2">
+            <label for="winTargetInput">Winning Net Worth (G):</label>
+            <input type="number" id="winTargetInput" min="1000" step="100" value="5000">
+        </div>
+    </div>
+    <div class="dlg-ft">
+        <button class="btn primary" id="btnStartGame">Start Game</button>
+    </div>
+</dialog>
+
+<!-- Dialogs -->
+<dialog id="dlgAskTrade">
+    <div class="dlg-hd"><strong>Bank</strong></div>
+    <div class="dlg-bd">
+        <p>Would you like to trade stocks?</p>
+    </div>
+    <div class="dlg-ft">
+        <button id="btnTradeYes" class="btn primary">Yes</button>
+        <button id="btnTradeNo" class="btn">No</button>
+    </div>
+</dialog>
+
+<dialog id="dlgBuy">
+    <div class="dlg-hd"><strong>Buy Property</strong></div>
+    <div class="dlg-bd">
+        <div id="buyInfo"></div>
+    </div>
+    <div class="dlg-ft">
+        <button class="btn ghost" onclick="dlgBuy.close()">Cancel</button>
+        <button class="btn good" id="btnDoBuy">Buy</button>
+    </div>
+</dialog>
+
+<dialog id="dlgInvest">
+    <div class="dlg-hd"><strong>Invest in Property</strong></div>
+    <div class="dlg-bd">
+        <div id="investInfo" style="margin-bottom:8px"></div>
+        <label>Investment (50–500G, step 50): <input type="number" id="investAmt" min="50" max="500" step="50" value="100"></label>
+    </div>
+    <div class="dlg-ft">
+        <button class="btn ghost" onclick="dlgInvest.close()">Cancel</button>
+        <button class="btn good" id="btnDoInvest">Invest</button>
+    </div>
+</dialog>
+
+<dialog id="dlgMarket">
+    <div class="dlg-hd"><strong>Stock Market</strong></div>
+    <div class="dlg-bd">
+        <table id="marketTable" class="stocks">
+            <thead>
+                <tr>
+                    <th>District</th>
+                    <th>Price</th>
+                    <th>Owned</th>
+                    <th>Buy/Sell Qty</th>
+                </tr>
+            </thead>
+            <tbody id="marketBody"></tbody>
+        </table>
+    </div>
+    <div class="dlg-ft">
+        <button class="btn primary" id="btnDoMarketBuy">Buy/Sell</button>
+        <button class="btn ghost" onclick="dlgMarket.close()">Close</button>
+    </div>
+</dialog>
+
+<dialog id="dlgCard">
+    <div class="dlg-hd"><strong>Venture Card</strong></div>
+    <div class="dlg-bd" id="cardText"></div>
+    <div class="dlg-ft"><button class="btn" onclick="dlgCard.close()">OK</button></div>
+</dialog>
+
+<dialog id="dlgFork">
+    <div class="dlg-hd"><strong>Fork Tile (*)</strong></div>
+    <div class="dlg-bd"><div id="forkText" class="small" style="margin-bottom:8px">Which way?</div>
+        <div class="row" id="forkBtns"></div>
+    </div>
+    <div class="dlg-ft"><button class="btn ghost" onclick="dlgFork.close()">Cancel</button></div>
+</dialog>
+
+<script src="src/main.js"></script>
+</body>
+</html>
